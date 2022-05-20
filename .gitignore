@@ -127,3 +127,10 @@ dmypy.json
 
 # Pyre type checker
 .pyre/
+
+FlowNetProject/images/*
+FlowNetProject/flying_chairs/*
+FlowNetProject/.gitignore
+FlowNetProject/README.md
+
+.idea/*
