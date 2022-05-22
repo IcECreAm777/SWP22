@@ -162,7 +162,7 @@ def main():
 
     # create model
     if args.pretrained:
-        network_data = torch.load(args.pretrained)
+        network_data = torch.load(args.pretrained, map_location=device)
         args.arch = network_data['arch']
         print("=> using pre-trained model '{}'".format(args.arch))
     else:
