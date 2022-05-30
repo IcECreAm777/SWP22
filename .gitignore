@@ -134,3 +134,5 @@ FlowNetProject/.gitignore
 FlowNetProject/README.md
 
 .idea/*
+
+WenjiProject/out/*
