@@ -1,3 +1,5 @@
+import struct
+
 import cv2
 import os
 
@@ -23,7 +25,7 @@ videos = ['/316_7_1_1.mp4']
 number = 8
 
 position_x, position_y = 70 - number, 60 - number
-window_size_x, window_size_y = 128 + number * 2, 96 + number * 2
+window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
 color_map_x, color_map_y = 60, 160
 
 grid = 1
@@ -41,12 +43,18 @@ lk_params = dict(winSize=(31, 31),
                  maxLevel=3,
                  criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
 
-
 ########################################################################################################################
 # own code additions
 ########################################################################################################################
 
 now = datetime.now()
+
+num_skipped_frames = 10
+
+frame_start = 1600
+frame_end = 7200
+
+ignore_horizontal_movement = True
 
 # generate paths
 dir_path = "./out/{}_{}_{}".format(now.hour, now.minute, now.second)
@@ -61,25 +69,25 @@ if not os.path.exists(txt_path):
     open(txt_path, 'x')
 
 
-def process_displacement_data(index, displacements_x, displacements_y):
+def process_displacement_data(index, displacement_x, displacement_y):
     """
     Processes the calculated displacement data into ground truth for the flow net project
 
     :param int index: frame index
-    :param displacements_x: all displacement data in the x direction
-    :param displacements_y: all displacement data in the y direction
+    :param displacement_x: all displacement data in the x direction
+    :param displacement_y: all displacement data in the y direction
     """
 
     # generate the output string and print it to console
-    output_string = "index: {} | displacement_x = {} {} | displacement_y = {} {}".format(
-        index, displacements_x.min(), displacements_x.max(), displacements_y.min(), displacements_y.max())
+    output_string = "frame: {} | displacement_x = {} {} | displacement_y = {} {}".format(
+        frame_start + index, displacement_x.min(), displacement_x.max(), displacement_y.min(), displacement_y.max())
     print(output_string)
 
     # save data into file
     with open(txt_path, 'a') as f:
         f.write(output_string + "\n")
 
-    generate_flo_file(index, displacements_x, displacements_y)
+    generate_flo_file(index, displacement_x, displacement_y)
 
 
 def open_flo_file(file):
@@ -101,13 +109,13 @@ def open_flo_file(file):
         print(flow)
 
 
-def generate_flo_file(index, displacements_x, displacements_y):
+def generate_flo_file(index, displacement_x, displacement_y):
     """
     generates a .flo file for the given values
 
     :param int index: index for the comparison
-    :param displacements_x: all displacement data in the x direction
-    :param displacements_y: all displacement data in the y direction
+    :param displacement_x: all displacement data in the x direction
+    :param displacement_y: all displacement data in the y direction
     """
 
     # generate flo header properties
@@ -115,25 +123,24 @@ def generate_flo_file(index, displacements_x, displacements_y):
     width = np.int32(window_size_x)
     height = np.int32(window_size_y)
 
-    # convert data array to flo data
-    data = []
-    for i in range(len(displacements_x)):
-        data.append(displacements_x[i])
-        data.append(displacements_y[i])
-
     # write flo data into the file
-    flo_path = '{}/{}.flo'.format(dir_path, index)
+    flo_path = '{}/{}.flo'.format(dir_path, frame_start + index)
     with open(flo_path, 'wb') as flo:
+        # write flo header
         flo.write(tag)
         flo.write(width)
         flo.write(height)
 
-        for i in range(len(data)):
-            flo.write(data[i])
+        # arrange data into flo format and write it into the file
+        horizontal = displacement_x if not ignore_horizontal_movement else 0
+        tmp = np.zeros((height, width * 2))
+        tmp[:, np.arange(width) * 2] = horizontal
+        tmp[:, np.arange(width) * 2 + 1] = displacement_y
+        tmp.astype(np.float32).tofile(flo)
 
     # save flow as png
     img = fz.convert_from_file(flo_path)
-    matplotlib.image.imsave("{}/{}.png".format(dir_path, index), img)
+    matplotlib.image.imsave("{}/{}.png".format(dir_path, frame_start + index), img)
 
 
 # open_flo_file('{}/{}.flo'.format(dir_path, index))
@@ -243,7 +250,8 @@ def calculating_dist2(frames):
         # print('index:', index, "displacement_x = ", min1, max1, "displacement_y", min2, max2)
         # print("minx = ",minx,"maxx = ",maxx,"miny = ",miny,"maxy = ",maxy)
 
-        process_displacement_data(index, displacements_x, displacements_y)
+        if index % num_skipped_frames == 0:
+            process_displacement_data(index, displacements_x[index], displacements_y[index])
 
         p0 = p1.reshape(size[0], size[1], size[2])
 
@@ -479,7 +487,9 @@ def generating_video2(frames, Eeqv_res, videoWriter):
 
 # MAIN
 
-frames = processing_video('E:/Files/Uni/SWP/videos/316_7_1_1.mp4', 1600, 7200)
+frames = processing_video('E:/Files/Uni/SWP/videos/316_7_1_1.mp4', frame_start, frame_end)
+
+# for i in range(len(frames))
 
 calculating_dist2(frames)
 
