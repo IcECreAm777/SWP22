@@ -136,3 +136,7 @@ FlowNetProject/README.md
 .idea/*
 
 WenjiProject/out/*
+
+FlowNetStrain/basedata/*
+FlowNetStrain/img/*
+FlowNetStrain/out/*
