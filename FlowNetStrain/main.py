@@ -18,8 +18,9 @@ import torch.utils.data
 import tensorflow as tf
 from torch.utils.tensorboard import SummaryWriter
 
-from FlowNetStrain.listdataset import ListDataset
-from FlowNetStrain.multiscaleloss import multiscaleEPE, realEPE
+from Helper.listdataset import ListDataset
+from Helper.multiscaleloss import multiscaleEPE, realEPE
+
 import re
 import flow_transforms
 import flowiz as fz
