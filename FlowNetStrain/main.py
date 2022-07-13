@@ -1,7 +1,10 @@
 import argparse
+import datetime
 import glob
+import ntpath
 import os
 import shutil
+import time
 from os.path import join, isfile
 import cv2
 import matplotlib.image
@@ -19,6 +22,7 @@ from FlowNetStrain.listdataset import ListDataset
 from FlowNetStrain.multiscaleloss import multiscaleEPE, realEPE
 import re
 import flow_transforms
+import flowiz as fz
 
 # define program arguments
 
@@ -42,37 +46,40 @@ parser.add_argument('-j', '--workers', default=8, type=int, metavar='N',
                     help='number of data loading workers')
 parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
                     help='manual epoch number (useful on restarts)')
-parser.add_argument('--epoch-size', default=500, type=int, metavar='N',
+parser.add_argument('--epoch-size', default=1000, type=int, metavar='N',
                     help='manual epoch size (will match dataset size if set to 0)')
+parser.add_argument('--max-values', default=False, type=bool, help="Whether to use only max values or all values")
+parser.add_argument('--ground-truth-directory', default='./basedata/Normalized_XY', type=str,
+                    help="The directory where the ground truth is located")
 
 # global parameters
 
-save_path = "./out/"
-img_path = "./img/"
+if __name__ == '__main__':
+    timestamp = datetime.datetime.now().strftime("%m-%d-%H-%M")
+    save_path = os.path.join("./out/", timestamp)
+    img_path = "./img/"
 
-ground_truth_directory = "./basedata/Horizontal"
+    number = 8
 
-number = 8
+    position_x, position_y = 70 - number, 60 - number
+    window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
+    color_map_x, color_map_y = 60, 160
 
-position_x, position_y = 70 - number, 60 - number
-window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
-color_map_x, color_map_y = 60, 160
+    frame_start = 1600
+    frame_end = 7200
 
-frame_start = 1600
-frame_end = 7200
+    num_skipped_frames = 1
 
-num_skipped_frames = 10
+    train_writer = SummaryWriter(os.path.join(save_path, 'train'))
+    test_writer = SummaryWriter(os.path.join(save_path, 'test'))
+    output_writers = []
+    for i in range(10):
+        output_writers.append(SummaryWriter(os.path.join(save_path, 'test', str(i))))
 
-train_writer = SummaryWriter(os.path.join(save_path, 'train'))
-test_writer = SummaryWriter(os.path.join(save_path, 'test'))
-output_writers = []
-for i in range(3):
-    output_writers.append(SummaryWriter(os.path.join(save_path, 'test', str(i))))
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-print_freq = 10
-n_iter = int(5)
+    print_freq = 10
+    n_iter = int(5)
 
 
 # Classes (got this class from https://github.com/ClementPinard/FlowNetPytorch)
@@ -143,9 +150,11 @@ def processing_video(path, start, end):
         if end != -1 and num >= end:
             break
 
-        # TODO apply filter again?
-        # frame = cv2.GaussianBlur(frame, (3, 3), 0)
-        # frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+        frame = cv2.GaussianBlur(frame, (3, 3), 0)
+        frame = cv2.normalize(frame, None, 0, 255, cv2.NORM_MINMAX)
+
+        frame = frame[position_y: position_y + window_size_y, position_x: position_x + window_size_x]
+
         frames.append(frame)
         num += 1
     return frames
@@ -165,9 +174,11 @@ def save_checkpoint(data, save_path, filename):
     print("checkpoint saved at {}".format(path))
 
 
-def generate_training_data_set():
+def generate_training_data_set(video_name):
     """
     generates the training set for the data loader to use
+
+    :param str video_name: the name of the current video
     """
 
     # read all the file path
@@ -185,8 +196,8 @@ def generate_training_data_set():
         # only use frames that are directly linked (idk english)
         if next_file_num - current_file_num == 1:
             # generate the file names
-            flo_file_name = "{}.flo".format(current_file_num)
-            ground_truth_path = join(ground_truth_directory, flo_file_name)
+            flo_file_name = "{}_{}.flo".format(video_name, current_file_num)
+            ground_truth_path = join(args.ground_truth_directory, flo_file_name)
 
             # continue when no ground truth data was found
             if not os.path.exists(ground_truth_path):
@@ -222,6 +233,31 @@ def open_flo_file(file):
         return flow
 
 
+def generate_flo_file(index, data):
+    """
+    generates a .flo file for the given values
+
+    :param int index: index for the comparison
+    :param data: generated flo data by the model
+    """
+
+    # generate flo header properties
+    tag = np.float32(202021.25)
+    width = np.int32(window_size_x)
+    height = np.int32(window_size_y)
+
+    # write flo data into the file
+    flo_path = '{}/{}.flo'.format(save_path, frame_start + index)
+    with open(flo_path, 'wb') as flo:
+        # write flo header
+        flo.write(tag)
+        flo.write(width)
+        flo.write(height)
+
+        # arrange data into flo format and write it into the file
+        data.detach().numpy().astype(np.float32).tofile(flo)
+
+
 def train_strain_prediction(epoch, data_set, video_name):
     global args
     """
@@ -241,8 +277,8 @@ def train_strain_prediction(epoch, data_set, video_name):
 
     # init target transform
     target_transform = transforms.Compose([
-        flow_transforms.ArrayToTensor(),
-        transforms.Normalize(mean=[0, 0], std=[args.div_flow, args.div_flow])
+        flow_transforms.ArrayToTensor()
+        # transforms.Normalize(mean=[0, 0], std=[args.div_flow, args.div_flow])
     ])
 
     # actually load stuff
@@ -281,19 +317,28 @@ def train_strain_prediction(epoch, data_set, video_name):
         train_loss, train_epe = train(train_loader, model, None, i, train_writer)
         train_writer.add_scalar('mean EPE', train_epe, i)
 
-        # TODO classify as strain or not
+        # test model
+        pre_time = time.time()
+
+        with torch.no_grad():
+            if args.max_values:
+                epe = validate_max_values(val_loader, model, i)
+            else:
+                epe = validate(val_loader, model, i)
+
+        test_writer.add_scalar('mean EPE', epe, i)
+        test_duration = time.time() - pre_time
+        print("== test duration: {} == ".format(test_duration))
+
+        # TODO classify as strain or not or save flo data to use in another program
 
         # save checkpoint
-        with torch.no_grad():
-            epe = validate(val_loader, model, i)
-        test_writer.add_scalar('mean EPE', epe, i)
-
         save_checkpoint({
             'epoch': i + 1,
             'arch': 'flownets',     # TODO if other model are added, this is the place to save it
             'best_EPE': 0,          # TODO if best values are saved in the future, this is the place to save them
             'div_flow': args.div_flow
-        }, save_path, "checkpoint.pth.tar")     # TODO add video name to checkpoint name
+        }, save_path, "{}_checkpoint.pth.tar".format(video_name))
 
 
 def train(train_loader, model, optimizer, epoch_index, writer):
@@ -328,6 +373,9 @@ def train(train_loader, model, optimizer, epoch_index, writer):
         # compute output
         output = model(cat)
 
+        # save first output as flo file for further calculation
+        generate_flo_file(i, output[0])
+
         # calculate loss and epe
         loss = multiscaleEPE(output, target, weights=args.multiscale_weights, sparse=args.sparse)
         flow2_epe = args.div_flow * realEPE(output[0], target, sparse=args.sparse)
@@ -356,23 +404,59 @@ def validate(val_loader, model, epoch):
     # switch to evaluate mode
     model.eval()
 
-    for i, (input, target) in enumerate(val_loader):
+    for i, (calculated, target) in enumerate(val_loader):
         target = target.to(device)
-        input = torch.cat(input, 1).to(device)
+        calculated = torch.cat(calculated, 1).to(device)
 
         # compute output
-        output = model(input)
+        output = model(calculated)
         flow2_EPE = args.div_flow * realEPE(output, target, sparse=args.sparse)
         # record EPE
         flow2_epes.update(flow2_EPE.item(), target.size(0))
 
         if i < len(output_writers):  # log first output of first batches
             if epoch == args.start_epoch:
-                mean_values = torch.tensor([0.45, 0.432, 0.411], dtype=input.dtype).view(3, 1, 1)
+                mean_values = torch.tensor([0.45, 0.432, 0.411], dtype=calculated.dtype).view(3, 1, 1)
                 output_writers[i].add_image('GroundTruth', flow2rgb(args.div_flow * target[0], max_value=10), 0)
-                output_writers[i].add_image('Inputs', (input[0, :3].cpu() + mean_values).clamp(0, 1), 0)
-                # output_writers[i].add_image('Inputs', (input[0, 4:].cpu() + mean_values).clamp(0, 1), 1)
+                output_writers[i].add_image('Inputs', (calculated[0, :3].cpu() + mean_values).clamp(0, 1), 0)
+                # output_writers[i].add_image('Inputs', (input[0, 3:].cpu() + mean_values).clamp(0, 1), 1) # TODO fix
             output_writers[i].add_image('FlowNet Outputs', flow2rgb(args.div_flow * output[0], max_value=10), epoch)
+
+        if i % print_freq == 0:
+            print('Test: [{}][{}/{}]\t EPE {}'
+                  .format(epoch, i, len(val_loader), flow2_epes))
+
+    print(' * EPE {:.3f}'.format(flow2_epes.avg))
+
+    return flow2_epes.avg
+
+
+def validate_max_values(val_loader, model, epoch):
+    """ validates and tests the model outputs, but only uses the max values and saves scalars """
+
+    flow2_epes = AverageMeter()
+
+    # switch to evaluate mode
+    model.eval()
+
+    for i, (calculated, target) in enumerate(val_loader):
+        target = target.to(device).max()
+        calculated = torch.cat(calculated, 1).to(device)
+
+        # compute output
+        output = model(calculated).max()
+
+        # loss
+        flow2_epe = (target - output).abs()
+
+        # record EPE
+        flow2_epes.update(flow2_epe)
+
+        if i < len(output_writers):  # log first output of first batches
+            if epoch == args.start_epoch:
+                output_writers[i].add_scalar('GroundTruth', target, 0)
+                output_writers[i].add_scalar('Input', (calculated.cpu().max()).clamp(0, 1), 0)
+            output_writers[i].add_scalar('FlowNet Outputs', output, epoch)
 
         if i % print_freq == 0:
             print('Test: [{}][{}/{}]\t EPE {}'
@@ -394,13 +478,10 @@ def save_frames_as_png(frames):
     if not os.path.exists(img_path):
         os.makedirs(img_path)
 
-    # slice array
-    frames = frames[frame_start:frame_end]
-
     # save every frame
     if num_skipped_frames <= 2:
         for i in range(len(frames)):
-            matplotlib.image.imsave("{}/{}.png".format(img_path, i), frames[i])
+            matplotlib.image.imsave("{}/{}.png".format(img_path, frame_start + i), frames[i])
         return
 
     # save only the frames needed and the successive
@@ -411,7 +492,10 @@ def save_frames_as_png(frames):
 
 def clear_work_dir():
     """clears the image directory to save system storage"""
-    shutil.rmtree(img_path)
+    if os.path.exists(img_path):
+        shutil.rmtree(img_path)
+
+    os.mkdir(img_path)
 
 
 def main():
@@ -423,22 +507,25 @@ def main():
     print("{} videos found.".format(len(videos)))
 
     # do the training for every video
-    for i in range(len(videos)):
-        print("processing video '{}' ...".format(videos[i]))
+    for i, val in enumerate(videos):
+        # get the video name only
+        head, tail = ntpath.split(val)
+        video_name = tail or ntpath.basename(head)
+
+        print("processing video {}/{}: '{}' ...".format(i, len(videos), video_name))
 
         # clear work dir to make sure the correct data is loaded
         clear_work_dir()
 
         # get frame data for the video - use frames wenji used in her code as well
-        frames = processing_video(videos[i], frame_start, frame_end)
+        frames = processing_video(val, frame_start, frame_end)
         save_frames_as_png(frames)
 
         # process these frames to make them usable in the training
-        flo_path = join(args.save, "flo_data", videos[i])
-        data = generate_training_data_set()
+        data = generate_training_data_set(video_name)
 
         # train the model to predict strains
-        train_strain_prediction(args.total_epochs, data, flo_path)
+        train_strain_prediction(args.total_epochs, data, video_name)
 
         print("processing '{}' finished.".format(videos[i]))
 

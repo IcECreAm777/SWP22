@@ -1,4 +1,9 @@
+import glob
+import ntpath
 import struct
+import time
+from enum import Enum
+from os.path import join
 
 import cv2
 import os
@@ -14,13 +19,20 @@ from scipy.ndimage.filters import gaussian_filter, median_filter
 import math
 from datetime import datetime
 import flowiz as fz
+import argparse
+
+# PROGRAM ARGUMENTS
+
+parser = argparse.ArgumentParser()
+parser.add_argument('--video_directory', type=str, help="path to the directory containing the videos")
+parser.add_argument('-m', '--mode', type=int, default=2, help="defines the mode for calculating the ground truth")
 
 # GLOBAL PARAMETERS
 
 data_path = '/content/drive/MyDrive/Data/BA/Image_Data/'
 save_path = '/content/drive/MyDrive/Data/BA/'
 
-videos = ['/316_7_1_1.mp4']
+# videos = ['/316_7_1_1.mp4']
 
 number = 8
 
@@ -43,21 +55,33 @@ lk_params = dict(winSize=(31, 31),
                  maxLevel=3,
                  criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
 
+
 ########################################################################################################################
 # own code additions
 ########################################################################################################################
 
-now = datetime.now()
+class Mode(Enum):
+    IgnoreCompletely = 0        # Ignores X movement completely (will be set to 0)
+    DontChange = 1              # No Normalization (X and Y movement are unchanged during flo calculation)
+    Normalize_X = 2             # Average movement will be considered in X direction
+    Normalize_XY = 3            # Average movement will be considered in both directions
 
-num_skipped_frames = 10
+
+now = datetime.now()
+today = datetime.today()
+
+num_skipped_frames = 1
 
 frame_start = 1600
 frame_end = 7200
 
-ignore_horizontal_movement = True
+movement_mode = -1
+
+normalize_window_size = 10
+normalize_every_frame = True
 
 # generate paths
-dir_path = "./out/{}_{}_{}".format(now.hour, now.minute, now.second)
+dir_path = "./out/{}_{}_{}__{}_{}_{}".format(today.day, today.month, today.year, now.hour, now.minute, now.second)
 txt_path = '{}/processed.txt'.format(dir_path)
 
 # create directory if it doesn't exist
@@ -69,13 +93,16 @@ if not os.path.exists(txt_path):
     open(txt_path, 'x')
 
 
-def process_displacement_data(index, displacement_x, displacement_y):
+def process_displacement_data(video_name, index, displacement_x, displacement_y, avg_x_dis, avg_y_dis):
     """
     Processes the calculated displacement data into ground truth for the flow net project
 
+    :param str video_name: the name of the video the ground truth will be generated for
     :param int index: frame index
     :param displacement_x: all displacement data in the x direction
     :param displacement_y: all displacement data in the y direction
+    :param float avg_x_dis: average movement in x direction, used when normalizing X or XY movement
+    :param float avg_y_dis: average movement in y direction, used when normalizing XY movement
     """
 
     # generate the output string and print it to console
@@ -87,7 +114,7 @@ def process_displacement_data(index, displacement_x, displacement_y):
     with open(txt_path, 'a') as f:
         f.write(output_string + "\n")
 
-    generate_flo_file(index, displacement_x, displacement_y)
+    generate_flo_file(index, displacement_x, displacement_y, avg_x_dis, avg_y_dis, video_name)
 
 
 def open_flo_file(file):
@@ -109,13 +136,16 @@ def open_flo_file(file):
         print(flow)
 
 
-def generate_flo_file(index, displacement_x, displacement_y):
+def generate_flo_file(index, displacement_x, displacement_y, avg_dis_x, avg_dis_y, video_name):
     """
     generates a .flo file for the given values
 
     :param int index: index for the comparison
     :param displacement_x: all displacement data in the x direction
     :param displacement_y: all displacement data in the y direction
+    :param float avg_dis_x: The average movement in x direction used when normalizing X or XY movement
+    :param float avg_dis_y: average movement in y direction, used when normalizing XY movement
+    :param str video_name: the name of the video this ground truth will be generated for
     """
 
     # generate flo header properties
@@ -124,23 +154,107 @@ def generate_flo_file(index, displacement_x, displacement_y):
     height = np.int32(window_size_y)
 
     # write flo data into the file
-    flo_path = '{}/{}.flo'.format(dir_path, frame_start + index)
+    flo_path = '{}/{}_{}.flo'.format(dir_path, video_name, frame_start + index)
     with open(flo_path, 'wb') as flo:
         # write flo header
         flo.write(tag)
         flo.write(width)
         flo.write(height)
 
+        # get average movement in X direction (if needed)
+        if movement_mode == Mode.IgnoreCompletely:
+            horizontal = 0
+        elif movement_mode == Mode.DontChange:
+            horizontal = displacement_x
+        else:
+            horizontal = displacement_x - avg_dis_x
+
+        # get average movement in y direction (if needed)
+        vertical = displacement_y
+        if movement_mode == Mode.Normalize_XY:
+            vertical = displacement_y - avg_dis_y
+
         # arrange data into flo format and write it into the file
-        horizontal = displacement_x if not ignore_horizontal_movement else 0
         tmp = np.zeros((height, width * 2))
-        tmp[:, np.arange(width) * 2] = horizontal
-        tmp[:, np.arange(width) * 2 + 1] = displacement_y
+        tmp[:, np.arange(width) * 2] = horizontal / displacement_x.max()
+        tmp[:, np.arange(width) * 2 + 1] = vertical / displacement_y.max()
         tmp.astype(np.float32).tofile(flo)
 
     # save flow as png
     img = fz.convert_from_file(flo_path)
-    matplotlib.image.imsave("{}/{}.png".format(dir_path, frame_start + index), img)
+    matplotlib.image.imsave("{}/{}_{}.png".format(dir_path, video_name, frame_start + index), img)
+
+
+def calculate_displacement(pre_frame, current_frame, p0, size_y):
+    """
+    Calculates the displacement for two frames
+
+    :param pre_frame: The first frame
+    :param current_frame: The second frame
+    :param p0: idk
+    :param size_y: The height of the frames
+    """
+
+    displacements_x = np.zeros((size_y, window_size_x))
+    displacements_y = np.zeros((size_y, window_size_x))
+
+    invalid_col = set()
+    invalid_row = set()
+    p1, st, err = cv2.calcOpticalFlowPyrLK(pre_frame, current_frame, p0, None, **lk_params)
+    p1.shape = (int(size_y / grid), int(window_size_x / grid), 2)
+    p0.shape = (int(size_y / grid), int(window_size_x / grid), 2)
+
+    for i in range(p1.shape[0]):
+        for j in range(p1.shape[1]):
+            x = int(p1[i][j][0])
+            y = int(p1[i][j][1])
+            if x < current_frame.shape[1] and y < current_frame.shape[0] and x >= 0 and y >= 0:
+                displacements_x[y][x] = p1[i][j][0] - p0[i][j][0]  # np.abs was here before
+                displacements_y[y][x] = p1[i][j][1] - p0[i][j][1]  # np.abs was here before
+            # replace the invalid point
+            if x >= current_frame.shape[1]:
+                invalid_col.add(j)
+            if y >= current_frame.shape[0] or y < 0:
+                invalid_row.add(i)
+
+    invalid_col = list(invalid_col)
+    invalid_row = list(invalid_row)
+
+    if bool(invalid_col):
+        new_points = np.array([[[x, y]] for y in range(0, size_y, grid)
+                               for x in range(0, len(invalid_col) * grid, grid)], dtype=np.float32)
+        # print(invalid_col,new_points.shape)
+        new_points.shape = (int(size_y / grid), len(invalid_col), 2)
+        p1 = np.delete(p1, invalid_col, axis=1)
+        p1 = np.column_stack((new_points, p1))
+
+    if bool(invalid_row):
+        new_points = np.array([[[x, y]] for y in range(0, len(invalid_row) * grid, grid)
+                               for x in range(0, window_size_x, grid)], dtype=np.float32)
+        # print(invalid_row,new_points.shape)
+        new_points.shape = (len(invalid_row), int(window_size_x / grid), 2)
+        p1 = np.delete(p1, invalid_row, axis=0)
+        p1 = np.row_stack((new_points, p1))
+
+    displacements_x = gaussian_filter(displacements_x, sigma=11, mode='constant', cval=0)
+    displacements_y = gaussian_filter(displacements_y, sigma=11, mode='constant', cval=0)
+    # dis_x = cv2.medianBlur(displacements_x, 3)
+    # dis_y = cv2.medianBlur(displacements_y, 3)
+
+    return displacements_x, displacements_y, p1
+
+
+def get_movement_mode(val):
+    if val == 0:
+        return Mode.IgnoreCompletely
+    elif val == 1:
+        return Mode.DontChange
+    elif val == 2:
+        return Mode.Normalize_X
+    elif val == 3:
+        return Mode.Normalize_XY
+    else:
+        return None
 
 
 # open_flo_file('{}/{}.flo'.format(dir_path, index))
@@ -174,7 +288,7 @@ def processing_video(path, start, end):
     return frames
 
 
-def calculating_dist2(frames):
+def calculating_dist2_unmodified(frames):
     p0 = np.array([[[x, y]] for y in range(0, window_size_y, grid)
                    for x in range(0, window_size_x, grid)], dtype=np.float32)
     size = p0.shape
@@ -201,13 +315,13 @@ def calculating_dist2(frames):
             for j in range(p1.shape[1]):
                 x = int(p1[i][j][0])
                 y = int(p1[i][j][1])
-                if x < cur_gray.shape[1] and y < cur_gray.shape[0] and x >= 0 and y >= 0:
-                    displacements_x[index][y][x] = p1[i][j][0] - p0[i][j][0]  # np.abs was here before
-                    displacements_y[index][y][x] = p1[i][j][1] - p0[i][j][1]  # np.abs was here before
+                if (x < cur_gray.shape[1] and y < cur_gray.shape[0] and x >= 0 and y >= 0):
+                    displacements_x[index][y][x] = np.abs(p1[i][j][0] - p0[i][j][0])
+                    displacements_y[index][y][x] = np.abs(p1[i][j][1] - p0[i][j][1])
                 # replace the invalid point
-                if x >= cur_gray.shape[1]:
+                if (x >= cur_gray.shape[1]):
                     invalid_col.add(j)
-                if y >= cur_gray.shape[0] or y < 0:
+                if (y >= cur_gray.shape[0] or y < 0):
                     invalid_row.add(i)
 
         invalid_col = list(invalid_col)
@@ -229,10 +343,59 @@ def calculating_dist2(frames):
             p1 = np.delete(p1, invalid_row, axis=0)
             p1 = np.row_stack((new_points, p1))
 
-        # displacements_x[index] = gaussian_filter(displacements_x[index],sigma=11,mode='constant',cval=0)
-        # displacements_y[index] = gaussian_filter(displacements_y[index],sigma=11,mode='constant',cval=0)
+        displacements_x[index] = gaussian_filter(displacements_x[index],sigma=11,mode='constant',cval=0)
+        displacements_y[index] = gaussian_filter(displacements_y[index],sigma=11,mode='constant',cval=0)
         # dis_x = cv2.medianBlur(displacements_x[index], 3)
         # dis_y = cv2.medianBlur(displacements_y[index], 3)
+
+        # print("frams: ",index," invalid: ", invalid_col)
+        min1 = displacements_x[index].min()
+        max1 = displacements_x[index].max()
+        min2 = displacements_y[index].min()
+        max2 = displacements_y[index].max()
+        if (min1 < minx): minx = min1
+        if (max1 > maxx): maxx = max1
+        if (min2 < miny): miny = min2
+        if (max2 > maxy): maxy = max2
+
+        print('index:', index, "displacement_x = ",min1,max1,"displacement_y",min2,max2)
+        print("minx = ",minx,"maxx = ",maxx,"miny = ",miny,"maxy = ",maxy)
+
+        p0 = p1.reshape(size[0], size[1], size[2])
+
+    return (displacements_x, displacements_y)
+
+
+def calculating_dist2(calculated_frames, video_name):
+    p0 = np.array([[[x, y]] for y in range(0, window_size_y, grid)
+                   for x in range(0, window_size_x, grid)], dtype=np.float32)
+
+    # only needed for normalizing camera movement
+    p0_up = np.array([[[x, y]] for y in range(0, normalize_window_size, grid)
+                      for x in range(0, window_size_x, grid)], dtype=np.float32)
+    p0_down = np.array([[[x, y]] for y in range(0, normalize_window_size, grid)
+                        for x in range(0, window_size_x, grid)], dtype=np.float32)
+
+    size = p0.shape
+    size_normalizing = p0_up.shape
+
+    minx, maxx, miny, maxy = 0, 0, 0, 0
+    displacements_x = np.zeros((len(calculated_frames) - 1, window_size_y, window_size_x))
+    displacements_y = np.zeros((len(calculated_frames) - 1, window_size_y, window_size_x))
+    avg_dis_x = 0
+    avg_dis_y = 0
+    currently_normalizing = True
+
+    for index in range(len(calculated_frames) - 1):
+        pre_frame = calculated_frames[index]
+        cur_frame = calculated_frames[index + 1]
+        pre_cut = pre_frame[position_y:position_y + window_size_y, position_x:position_x + window_size_x]
+        cur_cut = cur_frame[position_y:position_y + window_size_y, position_x:position_x + window_size_x]
+        pre_gray = cv2.cvtColor(pre_cut, cv2.COLOR_BGR2GRAY)
+        cur_gray = cv2.cvtColor(cur_cut, cv2.COLOR_BGR2GRAY)
+
+        displacements_x[index], displacements_y[index], p1 = calculate_displacement(pre_gray, cur_gray, p0,
+                                                                                    window_size_y)
 
         # print("frams: ", index, " invalid: ", invalid_col)
         min1 = displacements_x[index].min()
@@ -250,8 +413,49 @@ def calculating_dist2(frames):
         # print('index:', index, "displacement_x = ", min1, max1, "displacement_y", min2, max2)
         # print("minx = ",minx,"maxx = ",maxx,"miny = ",miny,"maxy = ",maxy)
 
+        # normalize the movement by calculating movement at the edge of the screen
+        if movement_mode.value >= 2 and currently_normalizing:
+            # get the edges of the screen for both of the processed frames
+            up_frame_pre = pre_gray[-normalize_window_size:, :]
+            up_frame_cur = cur_gray[-normalize_window_size:, :]
+            down_frame_pre = pre_gray[:normalize_window_size, :]
+            down_frame_cur = cur_gray[:normalize_window_size, :]
+
+            # calculate displacement for the windows at the edge of the screen
+            up_dis_x, up_dis_y, p1_up = calculate_displacement(up_frame_pre, up_frame_cur, p0_up, normalize_window_size)
+            down_dis_x, down_dis_y, p1_down = calculate_displacement(down_frame_pre, down_frame_cur, p0_down,
+                                                                     normalize_window_size)
+            p0_up = p1_up.reshape(size_normalizing[0], size_normalizing[1], size_normalizing[2])
+            p0_down = p1_down.reshape(size_normalizing[0], size_normalizing[1], size_normalizing[2])
+
+            # do average movement for x
+            sum_dis_x = 0
+            num_elements = 0
+            for i in up_dis_x:
+                for j in i:
+                    sum_dis_x += j
+                    num_elements += 1
+            for i in down_dis_x:
+                for j in i:
+                    sum_dis_x += j
+                    num_elements += 1
+            avg_dis_x = sum_dis_x / num_elements
+
+            sum_dis_y = 0
+            for i in up_dis_y:
+                for j in i:
+                    sum_dis_y += j
+            for i in down_dis_y:
+                for j in i:
+                    sum_dis_y += j
+            avg_dis_y = sum_dis_y / num_elements
+
+            # set currently normalizing to false when only first frame is important
+            currently_normalizing = normalize_every_frame
+
         if index % num_skipped_frames == 0:
-            process_displacement_data(index, displacements_x[index], displacements_y[index])
+            process_displacement_data(video_name, index, displacements_x[index], displacements_y[index], avg_dis_x,
+                                      avg_dis_y)
 
         p0 = p1.reshape(size[0], size[1], size[2])
 
@@ -487,12 +691,38 @@ def generating_video2(frames, Eeqv_res, videoWriter):
 
 # MAIN
 
-frames = processing_video('E:/Files/Uni/SWP/videos/316_7_1_1.mp4', frame_start, frame_end)
+def main():
+    global movement_mode
 
-# for i in range(len(frames))
+    args = parser.parse_args()
 
-calculating_dist2(frames)
+    # return when no video path was given
+    if not args.video_directory:
+        print("No video directory found. Aborting...")
+        return
 
-image = frames[10].copy()
-cv2.rectangle(image, (70, 60), (80 + 128, 60 + 96), (255, 0, 0), 1)
-plt.imshow(image)
+    # get the movement mode
+    movement_mode = get_movement_mode(args.mode)
+
+    # get all the videos in the directory
+    print("getting all mp4 files in the video directory {} ...".format(args.video_directory))
+    videos = glob.glob(join(args.video_directory, "*.mp4"))
+    if len(videos) <= 0:
+        print("No videos found. Please make sure the directory path is correct and the directory contains mp4 files.")
+        return
+    print("{} videos found.".format(len(videos)))
+
+    # generate the ground truth for every video
+    for i, val in enumerate(videos):
+        # get the video name only
+        head, tail = ntpath.split(val)
+        video_name = tail or ntpath.basename(head)
+
+        # calculate everything
+        print("processing video {}/{}: {} ...".format(i, len(videos), video_name))
+        frames = processing_video(val, frame_start, frame_end)
+        calculating_dist2(frames, video_name)
+        print("finished processing video {}/{}: {}".format(i, len(videos), video_name))
+
+
+main()
