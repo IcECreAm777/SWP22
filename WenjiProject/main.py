@@ -106,7 +106,7 @@ def process_displacement_data(video_name, index, displacement_x, displacement_y,
     """
 
     # generate the output string and print it to console
-    output_string = "frame: {} | displacement_x = {} {} | displacement_y = {} {}".format(
+    output_string = "'[{}] frame: {} | displacement_x = {} {} | displacement_y = {} {}".format(video_name,
         frame_start + index, displacement_x.min(), displacement_x.max(), displacement_y.min(), displacement_y.max())
     print(output_string)
 
@@ -343,8 +343,8 @@ def calculating_dist2_unmodified(frames):
             p1 = np.delete(p1, invalid_row, axis=0)
             p1 = np.row_stack((new_points, p1))
 
-        displacements_x[index] = gaussian_filter(displacements_x[index],sigma=11,mode='constant',cval=0)
-        displacements_y[index] = gaussian_filter(displacements_y[index],sigma=11,mode='constant',cval=0)
+        displacements_x[index] = gaussian_filter(displacements_x[index], sigma=11, mode='constant', cval=0)
+        displacements_y[index] = gaussian_filter(displacements_y[index], sigma=11, mode='constant', cval=0)
         # dis_x = cv2.medianBlur(displacements_x[index], 3)
         # dis_y = cv2.medianBlur(displacements_y[index], 3)
 
@@ -358,8 +358,8 @@ def calculating_dist2_unmodified(frames):
         if (min2 < miny): miny = min2
         if (max2 > maxy): maxy = max2
 
-        print('index:', index, "displacement_x = ",min1,max1,"displacement_y",min2,max2)
-        print("minx = ",minx,"maxx = ",maxx,"miny = ",miny,"maxy = ",maxy)
+        print('index:', index, "displacement_x = ", min1, max1, "displacement_y", min2, max2)
+        print("minx = ", minx, "maxx = ", maxx, "miny = ", miny, "maxy = ", maxy)
 
         p0 = p1.reshape(size[0], size[1], size[2])
 
