@@ -519,14 +519,20 @@ def main():
         clear_work_dir()
 
         # get frame data for the video - use frames wenji used in her code as well
+        print("\tsaving frames as png...")
         frames = processing_video(val, frame_start, frame_end)
         save_frames_as_png(frames)
+        print("\tsaving frames finished")
 
         # process these frames to make them usable in the training
+        print("\tgetting training data set...")
         data = generate_training_data_set(video_name)
+        print("\tdataset generated: {} items found".format(len(data)))
 
         # train the model to predict strains
+        print("\tstarting training and testing...")
         train_strain_prediction(args.total_epochs, data, video_name)
+        print("\ttraining and testing finished.")
 
         print("processing '{}' finished.".format(videos[i]))
 
