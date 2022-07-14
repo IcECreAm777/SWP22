@@ -185,9 +185,8 @@ def generate_training_data_set(video_name):
     # read all the file path
     print("\t\tgetting the generated images from the temporary working directory...")
     files = [f for f in os.listdir(img_path) if isfile(join(img_path, f))]
+    files.sort()
     print("\t\t{} files found".format(len(files)))
-
-    # we assume the paths in the files array are always sorted
 
     # save file path to the images in the array
     print("\t\tgenerating data set pairs...")
