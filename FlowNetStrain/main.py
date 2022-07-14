@@ -183,34 +183,41 @@ def generate_training_data_set(video_name):
     """
 
     # read all the file path
+    print("\t\tgetting the generated images from the temporary working directory...")
     files = [f for f in os.listdir(img_path) if isfile(join(img_path, f))]
+    print("\t\t{} files found".format(len(files)))
 
     # we assume the paths in the files array are always sorted
 
     # save file path to the images in the array
+    print("\t\tgenerating data set pairs...")
     data_set = []
     for i in range(len(files) - 1):
         # get the current and next frame number
         current_file_num = int(re.findall('[0-9]+', files[i])[0])
         next_file_num = int(re.findall('[0-9]+', files[i+1])[0])
+        print("\t\t\tnumber of files: {} | {}".format(current_file_num, next_file_num))
 
-        # only use frames that are directly linked (idk english)
-        if next_file_num - current_file_num == 1:
-            # generate the file names
-            flo_file_name = "{}_{}.flo".format(video_name, current_file_num)
-            ground_truth_path = join(args.ground_truth_directory, flo_file_name)
+        # continue with the next file when the files don't align
+        if next_file_num - current_file_num != 1:
+            print("\t\t\tfile indexes don't align (next frame number should be only 1 above the current frame)")
+            continue
 
-            # continue when no ground truth data was found
-            if not os.path.exists(ground_truth_path):
-                print("Ground truth file '{}' not found".format(ground_truth_path))
-                continue
+        # generate the file names
+        flo_file_name = "{}_{}.flo".format(video_name, current_file_num)
+        ground_truth_path = join(args.ground_truth_directory, flo_file_name)
 
-            # copy the ground truth file and get tha path to this file
-            shutil.copy(ground_truth_path, img_path)
+        # continue when no ground truth data was found
+        if not os.path.exists(ground_truth_path):
+            print("Ground truth file '{}' not found".format(ground_truth_path))
+            continue
 
-            # append file path to the data set
-            frame_pair = [files[i], files[i + 1]]
-            data_set.append([frame_pair, flo_file_name])
+        # copy the ground truth file and get tha path to this file
+        shutil.copy(ground_truth_path, img_path)
+
+        # append file path to the data set
+        frame_pair = [files[i], files[i + 1]]
+        data_set.append([frame_pair, flo_file_name])
 
     return data_set
 
@@ -527,6 +534,9 @@ def main():
         # process these frames to make them usable in the training
         print("\tgetting training data set...")
         data = generate_training_data_set(video_name)
+        if len(data) <= 0:
+            print("No data set items found. Continuing with next video.")
+            continue
         print("\tdataset generated: {} items found".format(len(data)))
 
         # train the model to predict strains
