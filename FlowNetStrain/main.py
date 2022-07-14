@@ -195,11 +195,12 @@ def generate_training_data_set(video_name):
         # get the current and next frame number
         current_file_num = int(re.findall('[0-9]+', files[i])[0])
         next_file_num = int(re.findall('[0-9]+', files[i+1])[0])
-        print("\t\t\tnumber of files: {} | {}".format(current_file_num, next_file_num))
 
         # continue with the next file when the files don't align
         if next_file_num - current_file_num != 1:
             print("\t\t\tfile indexes don't align (next frame number should be only 1 above the current frame)")
+            print("\t\t\tnumber of files: {} | {}".format(current_file_num, next_file_num))
+            print("\t\t\tContinuing with the next frame")
             continue
 
         # generate the file names
