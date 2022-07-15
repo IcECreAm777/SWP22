@@ -1,59 +1,56 @@
+import argparse
 import glob
+import math
 import ntpath
-import struct
-import time
+import os
+from datetime import datetime
 from enum import Enum
 from os.path import join
 
 import cv2
-import os
-
+import flowiz as fz
 import matplotlib.image
 import numpy as np
-from PIL import Image
-import matplotlib.pyplot as plt
-import torch
-import torch.nn.functional as F
-from numpy.core.multiarray import min_scalar_type
-from scipy.ndimage.filters import gaussian_filter, median_filter
-import math
-from datetime import datetime
-import flowiz as fz
-import argparse
+from scipy.ndimage.filters import gaussian_filter
+
+import threading
 
 # PROGRAM ARGUMENTS
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--video_directory', type=str, help="path to the directory containing the videos")
 parser.add_argument('-m', '--mode', type=int, default=2, help="defines the mode for calculating the ground truth")
+parser.add_argument('-b', '--batch_size', type=int, default=4,
+                    help="divides the frames into batches used in different threads")
 
-# GLOBAL PARAMETERS
+if __name__ == '__main__':
+    # GLOBAL PARAMETERS
 
-data_path = '/content/drive/MyDrive/Data/BA/Image_Data/'
-save_path = '/content/drive/MyDrive/Data/BA/'
+    data_path = '/content/drive/MyDrive/Data/BA/Image_Data/'
+    save_path = '/content/drive/MyDrive/Data/BA/'
 
-# videos = ['/316_7_1_1.mp4']
+    # videos = ['/316_7_1_1.mp4']
 
-number = 8
+    number = 8
 
-position_x, position_y = 70 - number, 60 - number
-window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
-color_map_x, color_map_y = 60, 160
+    position_x, position_y = 70 - number, 60 - number
+    window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
+    color_map_x, color_map_y = 60, 160
 
-grid = 1
-sigma = 40
-kernel_size = 11
+    grid = 1
+    sigma = 40
+    kernel_size = 11
 
-save_field = False
-save_dis_video = False
-save_strain_video = True
+    save_field = False
+    save_dis_video = False
+    save_strain_video = True
 
-# lk_params = dict(winSize=(63, 63),
-#         maxLevel=10,
-#         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 0.03))
-lk_params = dict(winSize=(31, 31),
-                 maxLevel=3,
-                 criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
+    # lk_params = dict(winSize=(63, 63),
+    #         maxLevel=10,
+    #         criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 100, 0.03))
+    lk_params = dict(winSize=(31, 31),
+                     maxLevel=3,
+                     criteria=(cv2.TERM_CRITERIA_EPS | cv2.TERM_CRITERIA_COUNT, 20, 0.03))
 
 
 ########################################################################################################################
@@ -61,36 +58,51 @@ lk_params = dict(winSize=(31, 31),
 ########################################################################################################################
 
 class Mode(Enum):
-    IgnoreCompletely = 0        # Ignores X movement completely (will be set to 0)
-    DontChange = 1              # No Normalization (X and Y movement are unchanged during flo calculation)
-    Normalize_X = 2             # Average movement will be considered in X direction
-    Normalize_XY = 3            # Average movement will be considered in both directions
+    IgnoreCompletely = 0  # Ignores X movement completely (will be set to 0)
+    DontChange = 1  # No Normalization (X and Y movement are unchanged during flo calculation)
+    Normalize_X = 2  # Average movement will be considered in X direction
+    Normalize_XY = 3  # Average movement will be considered in both directions
 
 
-now = datetime.now()
-today = datetime.today()
+class CalculatingDistanceThread(threading.Thread):
+    """ Thread used for calculating the movement between frames """
 
-num_skipped_frames = 1
+    def __init__(self, thread_id, frames, video_name, batch_size):
+        threading.Thread.__init__(self)
+        self.thread_id = thread_id
+        self.frames = frames
+        self.video_name = video_name
+        self.batch_size = batch_size
 
-frame_start = 1600
-frame_end = 7200
+    def run(self):
+        calculating_dist2(self.frames, self.video_name, self.batch_size)
 
-movement_mode = -1
 
-normalize_window_size = 10
-normalize_every_frame = True
+if __name__ == '__main__':
+    now = datetime.now()
+    today = datetime.today()
 
-# generate paths
-dir_path = "./out/{}_{}_{}__{}_{}_{}".format(today.day, today.month, today.year, now.hour, now.minute, now.second)
-txt_path = '{}/processed.txt'.format(dir_path)
+    num_skipped_frames = 1
 
-# create directory if it doesn't exist
-if not os.path.exists(dir_path):
-    os.makedirs(dir_path)
+    frame_start = 1600
+    frame_end = 7200
 
-# create directory if it doesn't exist
-if not os.path.exists(txt_path):
-    open(txt_path, 'x')
+    movement_mode = -1
+
+    normalize_window_size = 10
+    normalize_every_frame = True
+
+    # generate paths
+    dir_path = "./out/{}_{}_{}__{}_{}_{}".format(today.day, today.month, today.year, now.hour, now.minute, now.second)
+    txt_path = '{}/processed.txt'.format(dir_path)
+
+    # create directory if it doesn't exist
+    if not os.path.exists(dir_path):
+        os.makedirs(dir_path)
+
+    # create directory if it doesn't exist
+    if not os.path.exists(txt_path):
+        open(txt_path, 'x')
 
 
 def process_displacement_data(video_name, index, displacement_x, displacement_y, avg_x_dis, avg_y_dis):
@@ -106,8 +118,9 @@ def process_displacement_data(video_name, index, displacement_x, displacement_y,
     """
 
     # generate the output string and print it to console
-    output_string = "'[{}] frame: {} | displacement_x = {} {} | displacement_y = {} {}".format(video_name,
-        frame_start + index, displacement_x.min(), displacement_x.max(), displacement_y.min(), displacement_y.max())
+    output_string = "'[{}] frame: {} | displacement_x = {} {} | displacement_y = {} {}".format(
+        video_name, frame_start + index, displacement_x.min(), displacement_x.max(), displacement_y.min(),
+        displacement_y.max())
     print(output_string)
 
     # save data into file
@@ -366,7 +379,7 @@ def calculating_dist2_unmodified(frames):
     return (displacements_x, displacements_y)
 
 
-def calculating_dist2(calculated_frames, video_name):
+def calculating_dist2(calculated_frames, video_name, start_index):
     p0 = np.array([[[x, y]] for y in range(0, window_size_y, grid)
                    for x in range(0, window_size_x, grid)], dtype=np.float32)
 
@@ -454,8 +467,8 @@ def calculating_dist2(calculated_frames, video_name):
             currently_normalizing = normalize_every_frame
 
         if index % num_skipped_frames == 0:
-            process_displacement_data(video_name, index, displacements_x[index], displacements_y[index], avg_dis_x,
-                                      avg_dis_y)
+            process_displacement_data(video_name, start_index + index, displacements_x[index], displacements_y[index],
+                                      avg_dis_x, avg_dis_y)
 
         p0 = p1.reshape(size[0], size[1], size[2])
 
@@ -721,8 +734,26 @@ def main():
         # calculate everything
         print("processing video {}/{}: {} ...".format(i, len(videos), video_name))
         frames = processing_video(val, frame_start, frame_end)
-        calculating_dist2(frames, video_name)
+        if args.batch_size > 1:
+            pass
+            # calculate frames per batch
+            frames_per_batch = math.floor(len(frames) / args.batch_size)
+
+            # start the threads
+            threads = []
+            for j in range(args.batch_size - 1):
+                thread = CalculatingDistanceThread(i, frames[frames_per_batch * j: frames_per_batch * (j + 1)],
+                                                   video_name, frames_per_batch)
+                thread.start()
+                threads.append(thread)
+
+            # join threads back together
+            for t in threads:
+                t.join()
+        else:
+            calculating_dist2(frames, video_name, 0)
         print("finished processing video {}/{}: {}".format(i, len(videos), video_name))
 
 
-main()
+if __name__ == '__main__':
+    main()
