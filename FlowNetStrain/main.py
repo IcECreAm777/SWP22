@@ -52,6 +52,8 @@ parser.add_argument('--epoch-size', default=1000, type=int, metavar='N',
 parser.add_argument('--max-values', default=False, type=bool, help="Whether to use only max values or all values")
 parser.add_argument('--ground-truth-directory', default='./basedata/Normalized_XY', type=str,
                     help="The directory where the ground truth is located")
+parser.add_argument('--frame_start', type=int, default=1600, help="The first frame used for the processing")
+parser.add_argument('--frame_end', type=int, default=7200, help="The last frame used for the processing")
 
 # global parameters
 
@@ -65,9 +67,6 @@ if __name__ == '__main__':
     position_x, position_y = 70 - number, 60 - number
     window_size_x, window_size_y = 64 + number * 2, 96 + number * 2
     color_map_x, color_map_y = 60, 160
-
-    frame_start = 1600
-    frame_end = 7200
 
     num_skipped_frames = 1
 
@@ -249,13 +248,15 @@ def generate_flo_file(index, data):
     :param data: generated flo data by the model
     """
 
+    global args
+
     # generate flo header properties
     tag = np.float32(202021.25)
     width = np.int32(window_size_x)
     height = np.int32(window_size_y)
 
     # write flo data into the file
-    flo_path = '{}/{}.flo'.format(save_path, frame_start + index)
+    flo_path = '{}/{}.flo'.format(save_path, args.frame_start + index)
     with open(flo_path, 'wb') as flo:
         # write flo header
         flo.write(tag)
@@ -482,20 +483,22 @@ def save_frames_as_png(frames):
     :param Any frames: array of frames to save
     """
 
+    global args
+
     # create directory if needed
     if not os.path.exists(img_path):
         os.makedirs(img_path)
 
     # save every frame
     if num_skipped_frames <= 2:
-        for i in range(len(frames)):
-            matplotlib.image.imsave("{}/{}.png".format(img_path, frame_start + i), frames[i])
+        for i, val in enumerate(frames):
+            matplotlib.image.imsave("{}/{}.png".format(img_path, args.frame_start + i), val)
         return
 
     # save only the frames needed and the successive
     for i in range(0, len(frames), num_skipped_frames):
-        matplotlib.image.imsave("{}/{}.png".format(img_path, frame_start + i), frames[i])
-        matplotlib.image.imsave("{}/{}.png".format(img_path, frame_start + i + 1), frames[i + 1])
+        matplotlib.image.imsave("{}/{}.png".format(img_path, args.frame_start + i), frames[i])
+        matplotlib.image.imsave("{}/{}.png".format(img_path, args.frame_start + i + 1), frames[i + 1])
 
 
 def clear_work_dir():
@@ -507,6 +510,8 @@ def clear_work_dir():
 
 
 def main():
+    global args
+
     print("getting all mp4 files in the video directory {} ...".format(args.video_directory))
     videos = glob.glob(join(args.video_directory, "*.mp4"))
     if len(videos) <= 0:
@@ -527,7 +532,8 @@ def main():
 
         # get frame data for the video - use frames wenji used in her code as well
         print("\tsaving frames as png...")
-        frames = processing_video(val, frame_start, frame_end)
+        frames = processing_video(val, args.frame_start, args.frame_end)
+        print("\t\t{} frames generated".format(len(frames)))
         save_frames_as_png(frames)
         print("\tsaving frames finished")
 
